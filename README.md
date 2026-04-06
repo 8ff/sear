@@ -10,7 +10,11 @@ file signing and encryption. SSH signing uses FIDO2 ed25519-sk keys
 
 ## Install
 
-Download a binary from [Releases](../../releases), or build from source:
+```
+curl -fsSL https://raw.githubusercontent.com/8ff/sear/main/install.sh | sudo sh
+```
+
+Or download a binary from [Releases](../../releases), or build from source:
 
 ```
 go build -o sear .
