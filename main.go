@@ -1,12 +1,15 @@
 package main
 
 import (
+	"encoding/json"
 	"fmt"
 	"io"
+	"net/http"
 	"os"
 	"os/exec"
 	"os/signal"
 	"path/filepath"
+	"runtime"
 	"strings"
 	"syscall"
 	"time"
@@ -65,6 +68,8 @@ func main() {
 	case "decrypt":
 		requireCmd("age")
 		cmdDecrypt(os.Args[2:])
+	case "update":
+		cmdUpdate()
 	case "version", "--version", "-V":
 		fmt.Printf("sear %s\n", version)
 	case "help", "--help", "-h":
@@ -933,6 +938,100 @@ func cmdVerify(args []string) {
 	}
 }
 
+// ── update ──────────────────────────────────────────────────────────
+
+func cmdUpdate() {
+	const repo = "8ff/sear"
+
+	if version == "dev" {
+		die("update not supported for dev builds (build with -ldflags to set version)")
+	}
+
+	// Fetch latest release
+	resp, err := http.Get("https://api.github.com/repos/" + repo + "/releases/latest")
+	if err != nil {
+		die("failed to check for updates: %v", err)
+	}
+	defer resp.Body.Close()
+
+	if resp.StatusCode != 200 {
+		die("failed to check for updates: HTTP %d", resp.StatusCode)
+	}
+
+	var release struct {
+		TagName string `json:"tag_name"`
+	}
+	if err := json.NewDecoder(resp.Body).Decode(&release); err != nil {
+		die("failed to parse release info: %v", err)
+	}
+
+	latest := release.TagName
+	if latest == version || latest == "" {
+		fmt.Printf("sear %s is already the latest version\n", version)
+		return
+	}
+
+	// Download new binary
+	goos := runtime.GOOS
+	goarch := runtime.GOARCH
+	ext := ""
+	if goos == "windows" {
+		ext = ".exe"
+	}
+	binary := fmt.Sprintf("sear-%s-%s%s", goos, goarch, ext)
+	url := fmt.Sprintf("https://github.com/%s/releases/download/%s/%s", repo, latest, binary)
+
+	fmt.Printf("Updating sear %s -> %s (%s/%s)\n", version, latest, goos, goarch)
+
+	dlResp, err := http.Get(url)
+	if err != nil {
+		die("failed to download update: %v", err)
+	}
+	defer dlResp.Body.Close()
+
+	if dlResp.StatusCode != 200 {
+		die("failed to download update: HTTP %d", dlResp.StatusCode)
+	}
+
+	// Write to temp file
+	tmp, err := os.CreateTemp("", "sear-update-*")
+	if err != nil {
+		die("failed to create temp file: %v", err)
+	}
+	tmpPath := tmp.Name()
+
+	if _, err := io.Copy(tmp, dlResp.Body); err != nil {
+		tmp.Close()
+		os.Remove(tmpPath)
+		die("failed to download update: %v", err)
+	}
+	tmp.Close()
+
+	if err := os.Chmod(tmpPath, 0755); err != nil {
+		os.Remove(tmpPath)
+		die("failed to set permissions: %v", err)
+	}
+
+	// Replace current binary
+	self, err := os.Executable()
+	if err != nil {
+		os.Remove(tmpPath)
+		die("cannot locate current binary: %v", err)
+	}
+	self, err = filepath.EvalSymlinks(self)
+	if err != nil {
+		os.Remove(tmpPath)
+		die("cannot resolve binary path: %v", err)
+	}
+
+	if err := os.Rename(tmpPath, self); err != nil {
+		os.Remove(tmpPath)
+		die("failed to replace binary (try: sudo sear update): %v", err)
+	}
+
+	fmt.Printf("Done: sear %s\n", latest)
+}
+
 // ── helpers ─────────────────────────────────────────────────────────
 
 // findLatestIdentityFile finds the most recently created age-yubikey-identity file
@@ -1156,6 +1255,9 @@ Encryption:
 Key Management:
   keygen       Generate ed25519-sk signing key on YubiKey
   age-keygen   Generate age encryption key on YubiKey
+
+Other:
+  update       Update sear to the latest release
 
 Run 'sear <command> -h' for command help.
 Run 'sear help setup' for YubiKey getting started guide.
